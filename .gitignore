@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Environment variables (contains bot token - NEVER commit this)
+.env
+
+# Setup instructions (private)
+SETUP.md
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Database
+data.json

@@ -1,0 +1,14 @@
+{
+  "name": "meme-discord-bot",
+  "version": "1.0.0",
+  "description": "Discord bot to track messages per user and rate limit them",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node bot.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.3.1"
+  }
+}
