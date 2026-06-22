@@ -55,6 +55,8 @@ Each server can track **multiple channels**, every channel keeps its **own indep
 | **🚫 User Blocking** | Permanently block specific members; their messages are deleted on sight |
 | **🎭 Role Restrictions** | Restrict posting to specific roles |
 | **🎛️ Interactive Dashboard** | Configure limits/cooldowns via pop-ups, browse member lists, and manage any member - all from buttons and menus |
+| **🔔 Warn on Delete** | Optionally DM a member when their post is removed, explaining why and when they can post again (one DM per blocked streak, default off) |
+| **⏲️ Live Countdowns** | Reset and cooldown times render as Discord timestamps that tick down live in every client |
 | **🔎 Member Lookup** | Check any member's status, or pick them from a menu, **without pinging them** |
 | **💾 Persistent Storage** | All settings and live state are saved to `data.json`; timed lockdowns resume after a restart |
 | **👻 Stealth Mode** | Every bot response is ephemeral - only the person who ran the command sees it |
@@ -188,7 +190,7 @@ Commands registered
 #### Channels
 | Command | Description |
 |---------|-------------|
-| `/setup [channel] [limit] [cooldown] [resettime] [roles] [blockuser] [unblockuser] [lockdown]` | Configure everything at once (applies to all tracked channels) |
+| `/setup [channel] [limit] [cooldown] [resettime] [roles] [blockuser] [unblockuser] [lockdown] [warn]` | Configure everything at once (applies to all tracked channels) |
 | `/addchannel <channel> [limit] [cooldown] [resettime]` | Start tracking a channel |
 | `/removechannel <channel>` | Stop tracking a channel |
 | `/listchannels` | List tracked channels and their settings |
@@ -202,6 +204,7 @@ Commands registered
 | `/setcooldown <time\|off> [channel]` | Time between posts (default 1h). `off` disables it |
 | `/setresettime <duration> [channel]` | Length of the daily window |
 | `/setuserlimit <user> <limit> [channel]` | Per-member override (use a huge number to maximize) |
+| `/setwarn <on\|off> [channel]` | DM members when their post is removed |
 
 #### Members
 | Command | Description |
@@ -233,6 +236,7 @@ Commands registered
 - **Overview** - every tracked channel with its limit, cooldown, window and live stats. A dropdown jumps into any channel; buttons **Add Channel** (channel picker) and **Remove Channel** work inline - no commands needed.
 - **Channel panel** - shows status, limit, cooldown, window, roles and top members, with buttons to:
   - **Set Limit / Set Cooldown / Set Window** via pop-up text inputs
+  - **Warn: On/Off** - toggle DMing members when their post is removed
   - **Lock / Unlock**, **Reset Counts**, **Reset Stats**, **Unblock All**, **Clear Roles**
   - **Recent 10** - the last 10 members to post (newest first)
   - **Today's List** - the full, paginated list of everyone who posted this window

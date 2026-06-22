@@ -30,6 +30,7 @@ const userLimits = new Map();      // chanUserKey -> per-user limit override
 const blockedUsers = new Map();    // chanUserKey -> true
 const allowedRoles = new Map();    // channelId -> [roleId]
 const lockedChannels = new Map();  // channelId -> { lockedAt, expiresAt }
+const warnOnDelete = new Map();    // channelId -> true (DM a member when their post is removed)
 const totalMessagesDeleted = new Map(); // channelId -> count
 const totalMessagesTracked = new Map(); // channelId -> count
 
@@ -107,6 +108,7 @@ function saveData() {
             blockedUsers: Object.fromEntries(blockedUsers),
             allowedRoles: Object.fromEntries(allowedRoles),
             lockedChannels: Object.fromEntries(lockedChannels),
+            warnOnDelete: Object.fromEntries(warnOnDelete),
             totalMessagesDeleted: Object.fromEntries(totalMessagesDeleted),
             totalMessagesTracked: Object.fromEntries(totalMessagesTracked),
             messageCounts: Object.fromEntries(messageCounts),
@@ -150,6 +152,7 @@ function loadData() {
         restore(data.userLimits, userLimits);
         restore(data.blockedUsers, blockedUsers);
         restore(data.allowedRoles, allowedRoles);
+        restore(data.warnOnDelete, warnOnDelete);
         restore(data.totalMessagesDeleted, totalMessagesDeleted);
         restore(data.totalMessagesTracked, totalMessagesTracked);
         restore(data.messageCounts, messageCounts);
@@ -218,9 +221,10 @@ function formatDuration(ms) {
     return parts.join(' ') || '<1m';
 }
 
-function ago(ms) {
-    if (ms < 60 * 1000) return 'just now';
-    return `${formatDuration(ms)} ago`;
+// Discord relative timestamp — renders as a live, self-updating "in 3 hours" /
+// "5 minutes ago" in every client, localised to the viewer.
+function tsR(unixMs) {
+    return `<t:${Math.floor(unixMs / 1000)}:R>`;
 }
 
 function progressBar(count, limit) {
@@ -246,15 +250,15 @@ function getUserStatus(channelId, userId) {
     const entry = messageCounts.get(key);
 
     let used = 0;
-    let resetsIn = null;
-    let cooldownLeft = 0;
+    let resetAt = null;       // absolute ms when the daily count resets
+    let cooldownEndsAt = null; // absolute ms when the next post is allowed
     if (entry) {
         if (now - entry.startTime < windowMs) {
             used = entry.count;
-            resetsIn = windowMs - (now - entry.startTime);
+            resetAt = entry.startTime + windowMs;
         }
         if (cd > 0 && entry.lastSubmission && now - entry.lastSubmission < cd) {
-            cooldownLeft = cd - (now - entry.lastSubmission);
+            cooldownEndsAt = entry.lastSubmission + cd;
         }
     }
     return {
@@ -262,8 +266,8 @@ function getUserStatus(channelId, userId) {
         limit,
         windowMs,
         cooldownMs: cd,
-        resetsIn,
-        cooldownLeft,
+        resetAt,
+        cooldownEndsAt,
         lastSubmission: entry?.lastSubmission || 0,
         hasOverride: userLimits.has(key),
         blocked: blockedUsers.has(key),
@@ -283,10 +287,10 @@ function userStatusText(channelId, userId, { selfView = false } = {}) {
         lines.push(`   Remaining: **${s.remaining}**`);
     }
     if (s.hasOverride) lines.push('   *(custom per-user limit set by an admin)*');
-    if (s.resetsIn) lines.push(`⏳ Daily count resets in **${formatDuration(s.resetsIn)}**`);
+    if (s.resetAt) lines.push(`⏳ Daily count resets ${tsR(s.resetAt)}`);
     if (!isUnlimited(s.limit) && s.cooldownMs > 0) {
-        lines.push(s.cooldownLeft > 0
-            ? `🕒 Cooldown: next meme in **${formatDuration(s.cooldownLeft)}**`
+        lines.push(s.cooldownEndsAt
+            ? `🕒 Cooldown: next meme ${tsR(s.cooldownEndsAt)}`
             : `🕒 Cooldown: **ready to post** (${formatDuration(s.cooldownMs)} between memes)`);
     }
     if (s.blocked) lines.push('🚫 **Blocked** in this channel.');
@@ -294,7 +298,7 @@ function userStatusText(channelId, userId, { selfView = false } = {}) {
     const lockInfo = lockedChannels.get(channelId);
     if (lockInfo && (!lockInfo.expiresAt || Date.now() < lockInfo.expiresAt)) {
         lines.push(lockInfo.expiresAt
-            ? `🔒 Channel is **locked** (${formatDuration(lockInfo.expiresAt - Date.now())} left)`
+            ? `🔒 Channel is **locked** (unlocks ${tsR(lockInfo.expiresAt)})`
             : '🔒 Channel is **locked**.');
     }
     return lines.join('\n');
@@ -366,23 +370,35 @@ async function handleMessage(message) {
 
     totalMessagesTracked.set(channelId, (totalMessagesTracked.get(channelId) || 0) + 1);
 
-    const blockAndCount = () => {
+    const warnEnabled = !!warnOnDelete.get(channelId);
+    const removeOver = (reason) => {
         message.delete().catch(() => {});
         totalMessagesDeleted.set(channelId, (totalMessagesDeleted.get(channelId) || 0) + 1);
+        // One DM per blocked streak: warn only if enabled and we haven't already
+        // warned since their last accepted post (entry.warned resets on accept).
+        if (warnEnabled && !entry.warned) {
+            entry.warned = true;
+            message.author.send({ content: reason, allowedMentions: NO_PING }).catch(() => {});
+        }
         scheduleSave();
     };
 
     // Maximized users post freely (no limit, no cooldown)
     if (!isUnlimited(limit)) {
         // Daily limit reached — reject without consuming anything further
-        if (entry.count >= limit) return blockAndCount();
+        if (entry.count >= limit) {
+            return removeOver(`🛑 Your post in <#${channelId}> was removed — you've used all **${limit}/${limit}** memes for now. You can post again ${tsR(entry.startTime + windowMs)}.`);
+        }
         // Cooldown still active — reject (does not count toward the daily tally)
-        if (cd > 0 && entry.lastSubmission && now - entry.lastSubmission < cd) return blockAndCount();
+        if (cd > 0 && entry.lastSubmission && now - entry.lastSubmission < cd) {
+            return removeOver(`🕒 Your post in <#${channelId}> was removed — please slow down. You can post again ${tsR(entry.lastSubmission + cd)}.`);
+        }
     }
 
     // Accepted submission
     entry.count++;
     entry.lastSubmission = now;
+    entry.warned = false;
     scheduleSave();
 }
 
@@ -495,13 +511,14 @@ function buildChannelDashboard(channelId, guild) {
         { name: '⏱️ Reset window', value: `**${formatDuration(windowMs)}**`, inline: true },
         { name: '🎭 Roles', value: roles && roles.length ? roles.map(r => `<@&${r}>`).join(' ') : '*Everyone*', inline: true },
         { name: '🚫 Blocked', value: `**${blocked.length}**`, inline: true },
+        { name: '🔔 Warn on delete', value: warnOnDelete.get(channelId) ? '**on** (DMs members)' : 'off', inline: true },
     );
 
     if (activeLock) {
         embed.addFields({
             name: '⚠️ Lockdown',
             value: activeLock.expiresAt
-                ? `🔒 **${formatDuration(activeLock.expiresAt - now)}** remaining`
+                ? `🔒 unlocks ${tsR(activeLock.expiresAt)}`
                 : '🔒 Indefinite — use the Lock/Unlock button',
             inline: false,
         });
@@ -533,6 +550,7 @@ function buildChannelDashboard(channelId, guild) {
             new ButtonBuilder().setCustomId(`ch_setcooldown:${channelId}`).setLabel('Set Cooldown').setEmoji('🕒').setStyle(ButtonStyle.Primary),
             new ButtonBuilder().setCustomId(`ch_setreset:${channelId}`).setLabel('Set Window').setEmoji('⏱️').setStyle(ButtonStyle.Primary),
             new ButtonBuilder().setCustomId(`ch_togglelock:${channelId}`).setLabel(activeLock ? 'Unlock' : 'Lock').setEmoji(activeLock ? '🔓' : '🔒').setStyle(activeLock ? ButtonStyle.Success : ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`ch_togglewarn:${channelId}`).setLabel(warnOnDelete.get(channelId) ? 'Warn: On' : 'Warn: Off').setEmoji('🔔').setStyle(warnOnDelete.get(channelId) ? ButtonStyle.Success : ButtonStyle.Secondary),
         ),
         new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`ch_recent:${channelId}`).setLabel('Recent 10').setEmoji('🕒').setStyle(ButtonStyle.Secondary),
@@ -554,7 +572,6 @@ function buildChannelDashboard(channelId, guild) {
 }
 
 function buildRecentList(channelId, guild) {
-    const now = Date.now();
     const users = activeUsers(channelId)
         .filter(u => u.last > 0)
         .sort((a, b) => b.last - a.last)
@@ -575,7 +592,7 @@ function buildRecentList(channelId, guild) {
         const body = users.map((u, i) => {
             const lim = getEffectiveLimit(channelId, u.id);
             const used = isUnlimited(lim) ? '∞' : `${u.count}/${lim}`;
-            return `**${i + 1}.** <@${u.id}> — ${used} · posted ${ago(now - u.last)}`;
+            return `**${i + 1}.** <@${u.id}> — ${used} · posted ${tsR(u.last)}`;
         }).join('\n');
         embed.addFields({ name: 'Members', value: body.slice(0, 1024) });
     }
@@ -642,10 +659,10 @@ function buildUserPanel(channelId, userId, guild) {
         .addFields(
             { name: 'Used today', value: isUnlimited(s.limit) ? '∞ (maximized)' : `**${s.used}/${s.limit}** ${progressBar(s.used, s.limit)}`, inline: false },
             { name: 'Per-user override', value: s.hasOverride ? (isUnlimited(s.limit) ? '∞ maximized' : `**${s.limit}**`) : '*none (uses channel default)*', inline: true },
-            { name: 'Cooldown', value: s.cooldownMs <= 0 ? 'off' : (s.cooldownLeft > 0 ? `next in ${formatDuration(s.cooldownLeft)}` : 'ready'), inline: true },
-            { name: 'Daily reset', value: s.resetsIn ? `in ${formatDuration(s.resetsIn)}` : 'not started', inline: true },
+            { name: 'Cooldown', value: s.cooldownMs <= 0 ? 'off' : (s.cooldownEndsAt ? `next ${tsR(s.cooldownEndsAt)}` : 'ready'), inline: true },
+            { name: 'Daily reset', value: s.resetAt ? tsR(s.resetAt) : 'not started', inline: true },
             { name: 'Blocked', value: s.blocked ? '🚫 yes' : 'no', inline: true },
-            { name: 'Last post', value: s.lastSubmission ? ago(Date.now() - s.lastSubmission) : 'never', inline: true },
+            { name: 'Last post', value: s.lastSubmission ? tsR(s.lastSubmission) : 'never', inline: true },
         )
         .setTimestamp();
 
@@ -723,7 +740,8 @@ client.on('ready', async () => {
             .addStringOption(o => o.setName('roles').setDescription('Allowed role IDs (space-separated) or "clear"').setRequired(false))
             .addUserOption(o => o.setName('blockuser').setDescription('Block a user').setRequired(false))
             .addUserOption(o => o.setName('unblockuser').setDescription('Unblock a user').setRequired(false))
-            .addStringOption(o => o.setName('lockdown').setDescription('"on", "off", or a duration like 24h').setRequired(false))),
+            .addStringOption(o => o.setName('lockdown').setDescription('"on", "off", or a duration like 24h').setRequired(false))
+            .addStringOption(o => o.setName('warn').setDescription('DM members when their post is removed: "on" or "off"').setRequired(false))),
 
         adminOpt(new SlashCommandBuilder()
             .setName('addchannel')
@@ -761,6 +779,13 @@ client.on('ready', async () => {
             .setName('setresettime')
             .setDescription('Set how long until message counts reset')
             .addStringOption(o => o.setName('time').setDescription('e.g. 24h, 3d, 1d12h').setRequired(true))
+            .addChannelOption(o => o.setName('channel').setDescription('Specific channel (else all)').setRequired(false))),
+
+        adminOpt(new SlashCommandBuilder()
+            .setName('setwarn')
+            .setDescription('DM members when their post is removed (on/off)')
+            .addStringOption(o => o.setName('state').setDescription('on or off').setRequired(true)
+                .addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' }))
             .addChannelOption(o => o.setName('channel').setDescription('Specific channel (else all)').setRequired(false))),
 
         adminOpt(new SlashCommandBuilder()
@@ -960,6 +985,11 @@ async function handleButton(interaction) {
             allowedRoles.delete(channelId);
             saveData();
             return showView(interaction, buildChannelDashboard(channelId, interaction.guild));
+        case 'ch_togglewarn':
+            if (warnOnDelete.get(channelId)) warnOnDelete.delete(channelId);
+            else warnOnDelete.set(channelId, true);
+            saveData();
+            return showView(interaction, buildChannelDashboard(channelId, interaction.guild));
 
         case 'ch_manageuser': {
             const row = new ActionRowBuilder().addComponents(
@@ -1090,6 +1120,7 @@ function removeChannel(guildId, channelId) {
     resetTime.delete(channelId);
     allowedRoles.delete(channelId);
     lockedChannels.delete(channelId);
+    warnOnDelete.delete(channelId);
     totalMessagesTracked.delete(channelId);
     totalMessagesDeleted.delete(channelId);
     for (const key of userLimits.keys()) if (key.startsWith(channelId + ':')) userLimits.delete(key);
@@ -1235,6 +1266,14 @@ async function handleCommand(interaction) {
             }
         }
 
+        const warnStr = interaction.options.getString('warn');
+        if (warnStr) {
+            const lower = warnStr.toLowerCase().trim();
+            if (['on', 'yes', 'true'].includes(lower)) { eachTrackedChannel(guildId, cid => warnOnDelete.set(cid, true)); results.push('🔔 Delete warnings on (all channels)'); }
+            else if (['off', 'no', 'false'].includes(lower)) { eachTrackedChannel(guildId, cid => warnOnDelete.delete(cid)); results.push('🔕 Delete warnings off (all channels)'); }
+            else results.push(`⚠️ Invalid warn "${warnStr}"`);
+        }
+
         if (!results.length) return interaction.reply({ content: 'ℹ️ No options provided.', ephemeral: true });
         saveData();
         return interaction.reply({ content: `**Setup updated:**\n${results.join('\n')}`, ephemeral: true, allowedMentions: NO_PING });
@@ -1300,6 +1339,15 @@ async function handleCommand(interaction) {
         eachTrackedChannel(guildId, cid => resetTime.set(cid, ms));
         clearGuildCounts(guildId); saveData();
         return interaction.reply({ content: `✅ Window → **${formatDuration(ms)}** for all channels (counts reset)`, ephemeral: true });
+    }
+
+    if (name === 'setwarn') {
+        const on = interaction.options.getString('state') === 'on';
+        const channel = interaction.options.getChannel('channel');
+        const apply = cid => on ? warnOnDelete.set(cid, true) : warnOnDelete.delete(cid);
+        if (channel) { apply(channel.id); saveData(); return interaction.reply({ content: `✅ Delete warnings for <#${channel.id}> → **${on ? 'on' : 'off'}**`, ephemeral: true }); }
+        eachTrackedChannel(guildId, apply); saveData();
+        return interaction.reply({ content: `✅ Delete warnings → **${on ? 'on' : 'off'}** for all channels`, ephemeral: true });
     }
 
     if (name === 'setuserlimit') {
@@ -1375,7 +1423,7 @@ async function handleCommand(interaction) {
                 { name: '👤 For members', value: '**/info [channel]** — see your memes used today, what\'s left, your cooldown, and when it resets. Defaults to the channel you run it in.', inline: false },
                 { name: '⭐ /setup', value: 'One-shot config (applies to all tracked channels): `channel`, `limit`, `cooldown` (e.g. 1h/off), `resettime`, `roles`, `blockuser`, `unblockuser`, `lockdown`.', inline: false },
                 { name: '📌 Channels', value: '**/addchannel** `<channel> [limit] [cooldown] [resettime]` · **/removechannel** `<channel>` · **/listchannels** · **/channeldashboard** `<channel>`', inline: false },
-                { name: '⚙️ Limits', value: '**/setlimit** `<n> [channel]` · **/setcooldown** `<time|off> [channel]` · **/setresettime** `<time> [channel]` · **/setuserlimit** `<user> <n> [channel]` (per-member override)', inline: false },
+                { name: '⚙️ Limits', value: '**/setlimit** `<n> [channel]` · **/setcooldown** `<time|off> [channel]` · **/setresettime** `<time> [channel]` · **/setuserlimit** `<user> <n> [channel]` (per-member override) · **/setwarn** `<on|off> [channel]` (DM on delete)', inline: false },
                 { name: '👥 Members', value: '**/checkuser** `<user> [channel]` (no ping) · **/reset** `<user> [channel]` · **/blockuser** · **/unblockuser**', inline: false },
                 { name: '🔒 Lockdown & roles', value: '**/lockdown** `<channel> [duration]` · **/unlock** `<channel>` · **/setroles** · **/clearroles**', inline: false },
                 { name: '🎛️ Dashboard', value: '**/dashboard** opens the control center: pick a channel, edit limit/cooldown/window via pop-ups, view **Recent 10** or **Today\'s full list**, and **Manage / Look Up** any member (set a custom limit, maximize, reset, block) without pinging them.', inline: false },
