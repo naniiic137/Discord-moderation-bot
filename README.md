@@ -10,7 +10,7 @@
 
 <br>
 
-**Rate limiting** · **Lockdowns** · **Role restrictions** · **User blocking** · **One-command setup**
+**Rate limiting** · **Multi-Channel Support** · **Lockdowns** · **Role restrictions** · **User blocking** · **Persistent storage** · **One-command setup**
 
 </div>
 
@@ -37,6 +37,8 @@
 
 It tracks how many messages each user sends within a configurable time window, automatically deletes messages that exceed the limit, and provides powerful moderation tools like instant lockdowns, user blocking, and role-based access control.
 
+The bot supports **multiple channels per server**, with each channel having its own independent settings, stats, and dashboard. All configuration and live state are **persisted to disk**, so nothing is lost across restarts or crashes.
+
 > **Key principle:** All admin commands are completely invisible to regular users. They only see `/info`.
 
 ---
@@ -49,12 +51,13 @@ It tracks how many messages each user sends within a configurable time window, a
 |---------|-------------|
 | **📊 Rate Limiting** | Limit how many messages each user can send within a customizable time window |
 | **⏱️ Configurable Reset Time** | Set the cooldown window to anything — `30m`, `12h`, `3d`, `1d12h`, etc. |
-| **🔒 Channel Lockdown** | Instantly block ALL conversation — with optional auto-expire timer |
+| **🔒 Channel Lockdown** | Instantly block ALL conversation in a specific channel — with optional auto-expire timer |
 | **🚫 User Blocking** | Permanently block specific users — their messages are deleted on sight |
-| **🎭 Role Restrictions** | Only allow certain roles to type in the tracked channel |
+| **🎭 Role Restrictions** | Only allow certain roles to type in tracked channels |
+| **📌 Multi-Channel Support** | Track multiple channels simultaneously with independent settings per channel |
 | **⚡ One-Command Setup** | Configure everything with a single `/setup` command |
-| **🎛️ Interactive Dashboard** | A rich embed dashboard with buttons for instant moderation and live stats |
-| **💾 Bulletproof Persistence** | Fully back up state across reboots. Timers resume organically after a crash |
+| **🎛️ Interactive Dashboard** | Rich embed dashboards — one main overview + per-channel stats with buttons for instant moderation |
+| **💾 Persistent Storage** | All settings and live state are saved to `data.json`. Timed lockdowns resume automatically after a restart |
 | **👻 Stealth Mode** | All command responses are ephemeral (hidden) — only the admin sees them |
 | **🛡️ Admin-Only Access** | Non-admin users can't see or use any admin commands |
 
@@ -91,7 +94,7 @@ User sends a message
        No
         │
         ▼
-  Is it in the
+  Is it in a
   tracked channel? ── No ──→ Ignore
         │
        Yes
@@ -102,7 +105,7 @@ User sends a message
        No
         │
         ▼
-  Is channel locked? ── Yes ──→ Delete 🗑️
+  Is this channel locked? ── Yes ──→ Delete 🗑️
         │
        No
         │
@@ -215,11 +218,11 @@ Commands registered
 
 ### ⭐ `/setup` — The All-in-One Command
 
-Configure **everything** in a single command. All parameters are optional — only include what you want to change.
+Configure **everything** in a single command. All parameters are optional — only include what you want to change. Settings apply to **all tracked channels** in the server.
 
 | Parameter | Type | Description | Example |
 |-----------|------|-------------|---------|
-| `channel` | Channel | Channel to track | `#memes` |
+| `channel` | Channel | Channel to add to tracking | `#memes` |
 | `limit` | Integer | Max messages per window | `5` |
 | `resettime` | String | Time until counts reset | `24h`, `3d`, `12h` |
 | `roles` | String | Allowed role IDs (space-separated), or `clear` | `123456 789012` |
@@ -235,24 +238,27 @@ Configure **everything** in a single command. All parameters are optional — on
 
 | Command | Description |
 |---------|-------------|
-| `/info` | Shows your message count, time until reset, blocked status, and lockdown status |
+| `/info [channel]` | Shows your message count, time until reset, blocked status, and lockdown status |
 
 #### 👑 Admin Only
 
 | Command | Description |
 |---------|-------------|
-| `/setchannel <channel> [limit] [resettime]` | Set the tracked channel (with optional limit & reset time) |
-| `/removechannel` | Stop tracking the channel |
-| `/setlimit <number>` | Set max messages per window |
-| `/setresettime <duration>` | Set how long until message counts reset |
-| `/lockdown [duration]` | Lock the channel — no one can talk (optional auto-expire) |
-| `/unlock` | Remove an active lockdown |
-| `/blockuser <user>` | Permanently block a user |
-| `/unblockuser <user>` | Unblock a user |
-| `/setroles <role IDs>` | Set which roles can type (space-separated IDs) |
-| `/clearroles` | Remove role restrictions — everyone can type |
-| `/reset <user>` | Reset a specific user's message count |
-| `/dashboard` | View full server stats — limits, lockdowns, blocked users, activity |
+| `/addchannel <channel> [limit] [resettime]` | Add a channel to track with optional settings |
+| `/removechannel <channel>` | Remove a channel from tracking |
+| `/listchannels` | List all tracked channels |
+| `/setlimit <number> [channel]` | Set max messages per window (applies to all or specific channel) |
+| `/setresettime <duration> [channel]` | Set reset time (applies to all or specific channel) |
+| `/lockdown <channel> [duration]` | Lock a specific channel — no one can talk |
+| `/unlock <channel>` | Remove lockdown from a specific channel |
+| `/blockuser <user> [channel]` | Block a user (specific channel or all) |
+| `/unblockuser <user> [channel]` | Unblock a user (specific channel or all) |
+| `/setroles <role IDs> [channel]` | Set allowed roles (applies to all or specific channel) |
+| `/clearroles [channel]` | Remove role restrictions (applies to all or specific channel) |
+| `/reset <user> [channel]` | Reset a user's count (specific channel or all) |
+| `/dashboard` | View main dashboard with all channels overview |
+| `/channeldashboard <channel>` | View detailed stats for a specific channel |
+| `/help` | Show all available commands with detailed information |
 
 ---
 
@@ -273,6 +279,21 @@ Durations are flexible and support any combination:
 
 ## 💡 Usage Examples
 
+### Track Multiple Channels
+
+```
+/addchannel #memes limit:3 resettime:24h
+/addchannel #general limit:10 resettime:1h
+```
+> Each channel has its own independent limit, reset time, and stats.
+
+### View Channel Dashboard
+
+```
+/channeldashboard #memes
+```
+> Shows detailed stats for the memes channel — user activity, blocked users, etc.
+
 ### Quick Setup — Limit a Memes Channel
 
 ```
@@ -283,14 +304,14 @@ Durations are flexible and support any combination:
 ### Emergency Lockdown
 
 ```
-/lockdown
+/lockdown #memes
 ```
-> Instantly blocks all conversation. Only admins can still type.
+> Instantly blocks all conversation in #memes. Only admins can still type.
 
 ### Timed Lockdown — Cool Down Period
 
 ```
-/setup lockdown:2h
+/lockdown #memes 2h
 ```
 > Locks channel for 2 hours, then automatically reopens.
 
@@ -304,7 +325,7 @@ Durations are flexible and support any combination:
 ### Block a Spammer and Lock for 30 Minutes
 
 ```
-/setup blockuser:@spammer lockdown:30m
+/setup channel:#memes blockuser:@spammer lockdown:30m
 ```
 > Block the user AND lock the channel — all in one command.
 
@@ -315,12 +336,19 @@ Durations are flexible and support any combination:
 ```
 > Shows: your message count, the limit, when it resets, and if the channel is locked.
 
-### View Server Dashboard (admin)
+### View Main Dashboard (admin)
 
 ```
 /dashboard
 ```
-> Summons the **Interactive Dashboard**, showing live stats, user leaderboards, and lockdown status. It includes buttons to instantly refresh data, reset counts, trigger lockdowns, and clear roles without typing commands.
+> Shows an overview of all tracked channels with summary stats. Click "View Channel Stats" to see per-channel details.
+
+### Get Help (admin)
+
+```
+/help
+```
+> Shows a detailed list of all available commands with descriptions and examples.
 
 ---
 
@@ -340,6 +368,7 @@ Durations are flexible and support any combination:
 meme-guardian-bot/
 ├── bot.js              # Main bot logic — all commands and event handlers
 ├── package.json        # Dependencies and scripts
+├── data.json           # Persisted state (auto-created, not committed)
 ├── .env                # Bot token (not committed)
 ├── .gitignore          # Files excluded from git
 └── README.md           # You are here
@@ -347,19 +376,20 @@ meme-guardian-bot/
 
 ### Data Storage
 
-All data is automatically and persistently stored in a local `data.json` file. This means the bot can safely restart, crash, or update without losing any information:
+All settings and live state are persisted to a local `data.json` file, so the bot can restart, crash, or update without losing anything. The file is created automatically and is keyed **per channel** (so each tracked channel keeps its own independent state):
 
 | Data Type | Persistence |
-|-----|---------|
-| `trackedChannel` | Saved across restarts |
-| `messageCounts` | User timestamps and counts survive reboots |
-| `rateLimit` | Saved across restarts |
-| `resetTime` | Saved across restarts |
-| `blockedUsers` | Saved across restarts |
-| `allowedRoles` | Saved across restarts |
-| `lockedChannels` | Saved across restarts (auto-unlock timers will resume) |
+|-----------|-------------|
+| `trackedChannels` | Per-guild set of tracked channels |
+| `messageCounts` | Per-channel, per-user timestamps and counts |
+| `rateLimit` | Per-channel message limit |
+| `resetTime` | Per-channel reset window |
+| `blockedUsers` | Per-channel blocked users |
+| `allowedRoles` | Per-channel role restrictions |
+| `lockedChannels` | Per-channel lockdown state (auto-unlock timers resume after restart) |
+| `totalMessagesTracked` / `totalMessagesDeleted` | Per-channel statistics |
 
-> 💾 **Zero-Config Database:** You don't need to setup MongoDB or SQL. The bot manages the JSON file automatically.
+> 💾 **Zero-Config Database:** No MongoDB or SQL needed — the bot manages the JSON file automatically. Config and moderation actions are written immediately; high-frequency per-message count updates are coalesced (at most one write per second) to keep a busy channel from blocking the event loop, and a pending write is flushed on graceful shutdown (`SIGINT` / `SIGTERM`).
 
 ---
 
@@ -380,15 +410,15 @@ Global slash commands can take up to **1 hour** to register with Discord the fir
 </details>
 
 <details>
-<summary><b>What happens when the bot restarts?</b></summary>
+<summary><b>Does the bot save data between restarts?</b></summary>
 
-Nothing is lost! The bot saves everything (limits, locked channels, connected users' progress) to a local `data.json` file. When the bot restarts, it immediately resumes exactly where it left off.
+Yes. The bot saves everything (tracked channels, per-channel limits, locked channels, blocked users, and per-user message progress) to a local `data.json` file. When the bot restarts, it loads that state and resumes exactly where it left off — including auto-unlock timers for timed lockdowns.
 </details>
 
 <details>
 <summary><b>Can I use this bot in multiple servers?</b></summary>
 
-Yes! The bot supports multiple servers simultaneously. Each server has its own independent configuration, limits, blocked users, and lockdown state.
+Yes! The bot supports multiple servers simultaneously. Each server has its own independent configuration, tracked channels, limits, blocked users, and lockdown states.
 </details>
 
 <details>
@@ -407,7 +437,21 @@ No. Users with the **Administrator** permission bypass all restrictions — rate
 <summary><b>What's the difference between blocking a user and a lockdown?</b></summary>
 
 - **Block** (`/blockuser`): Targets a **specific user** — their messages are always deleted, even when there's no lockdown.
-- **Lockdown** (`/lockdown`): Blocks **everyone** (except admins) from talking in the tracked channel. Can be timed.
+- **Lockdown** (`/lockdown`): Blocks **everyone** (except admins) from talking in the specified channel. Can be timed.
+</details>
+
+<details>
+<summary><b>How is data structured for multiple channels?</b></summary>
+
+Each tracked channel has its own independent:
+- Message limit and reset time
+- Role restrictions
+- Blocked users list
+- Lockdown state
+- Per-user message counts
+- Statistics (messages tracked/deleted)
+
+The `/dashboard` command shows an overview of all channels, and `/channeldashboard` shows detailed stats for a specific channel.
 </details>
 
 ---
