@@ -10,7 +10,7 @@
 
 <br>
 
-**Rate limiting** · **Multi-Channel Support** · **Lockdowns** · **Role restrictions** · **User blocking** · **Persistent storage** · **One-command setup**
+**Daily limits** · **Per-submission cooldowns** · **Multi-channel** · **Per-member overrides** · **Lockdowns** · **Roles** · **Interactive dashboard** · **Persistent**
 
 </div>
 
@@ -23,6 +23,7 @@
 - [How It Works](#-how-it-works)
 - [Getting Started](#-getting-started)
 - [Commands Reference](#-commands-reference)
+- [The Dashboard](#-the-dashboard)
 - [Usage Examples](#-usage-examples)
 - [Architecture](#-architecture)
 - [FAQ](#-faq)
@@ -33,48 +34,43 @@
 
 ## 🔍 Overview
 
-**Meme Guardian Bot** is a Discord bot designed to give server administrators full control over message flow in designated channels. Whether you're managing a meme channel that gets too chaotic, running a structured Q&A channel, or need to enforce posting limits — this bot handles it all.
+**Meme Guardian Bot** gives server admins full control over how often members can post in designated channels. It tracks each member's submissions, enforces both a **daily limit** and a **cooldown between posts**, and deletes anything over the line - all while staying invisible to regular members.
 
-It tracks how many messages each user sends within a configurable time window, automatically deletes messages that exceed the limit, and provides powerful moderation tools like instant lockdowns, user blocking, and role-based access control.
+Each server can track **multiple channels**, every channel keeps its **own independent settings**, and everything is **persisted to disk** so nothing is lost across restarts or crashes.
 
-The bot supports **multiple channels per server**, with each channel having its own independent settings, stats, and dashboard. All configuration and live state are **persisted to disk**, so nothing is lost across restarts or crashes.
-
-> **Key principle:** All admin commands are completely invisible to regular users. They only see `/info`.
+> **Key principle:** All admin tools are invisible to regular members. They only ever see `/info`.
 
 ---
 
 ## ✨ Features
 
-### 🎯 Core Features
-
 | Feature | Description |
 |---------|-------------|
-| **📊 Rate Limiting** | Limit how many messages each user can send within a customizable time window |
-| **⏱️ Configurable Reset Time** | Set the cooldown window to anything — `30m`, `12h`, `3d`, `1d12h`, etc. |
-| **🔒 Channel Lockdown** | Instantly block ALL conversation in a specific channel — with optional auto-expire timer |
-| **🚫 User Blocking** | Permanently block specific users — their messages are deleted on sight |
-| **🎭 Role Restrictions** | Only allow certain roles to type in tracked channels |
-| **📌 Multi-Channel Support** | Track multiple channels simultaneously with independent settings per channel |
-| **⚡ One-Command Setup** | Configure everything with a single `/setup` command |
-| **🎛️ Interactive Dashboard** | Rich embed dashboards — one main overview + per-channel stats with buttons for instant moderation |
-| **💾 Persistent Storage** | All settings and live state are saved to `data.json`. Timed lockdowns resume automatically after a restart |
-| **👻 Stealth Mode** | All command responses are ephemeral (hidden) — only the admin sees them |
-| **🛡️ Admin-Only Access** | Non-admin users can't see or use any admin commands |
+| **📊 Daily Limit** | Cap how many memes each member can post per window (default **5**) |
+| **🕒 Per-Submission Cooldown** | Enforce a minimum gap between accepted posts (default **1h**) - independent from the daily limit |
+| **⏱️ Configurable Window** | The "day" can be any duration - `30m`, `12h`, `24h`, `3d`, `1d12h`, … |
+| **👤 Per-Member Overrides** | Give a single member a custom limit, **maximize** them (unlimited, no cooldown), clear their override, or reset their usage |
+| **📌 Multi-Channel** | Track many channels at once, each with its own limit, cooldown, roles, locks and stats |
+| **🔒 Lockdown** | Instantly freeze a channel (optionally auto-expiring) - only admins can talk |
+| **🚫 User Blocking** | Permanently block specific members; their messages are deleted on sight |
+| **🎭 Role Restrictions** | Restrict posting to specific roles |
+| **🎛️ Interactive Dashboard** | Configure limits/cooldowns via pop-ups, browse member lists, and manage any member - all from buttons and menus |
+| **🔎 Member Lookup** | Check any member's status, or pick them from a menu, **without pinging them** |
+| **💾 Persistent Storage** | All settings and live state are saved to `data.json`; timed lockdowns resume after a restart |
+| **👻 Stealth Mode** | Every bot response is ephemeral - only the person who ran the command sees it |
 
 ### 🔐 Permission Model
 
 ```
 ┌─────────────────────────────────────────────┐
 │  👑 Server Administrator                    │
-│  ├── Can use ALL commands                   │
-│  ├── Bypasses all rate limits               │
-│  ├── Bypasses lockdowns                     │
-│  └── Commands are hidden from other users   │
+│  ├── Can use ALL commands & the dashboard   │
+│  ├── Bypasses limits, cooldowns & lockdowns │
+│  └── Admin commands hidden from members     │
 │                                             │
-│  👤 Regular User                            │
+│  👤 Regular Member                          │
 │  ├── Can only use /info                     │
-│  ├── Subject to rate limits                 │
-│  ├── Subject to lockdowns                   │
+│  ├── Subject to limits, cooldowns & locks   │
 │  └── Cannot see admin commands at all       │
 └─────────────────────────────────────────────┘
 ```
@@ -83,67 +79,46 @@ The bot supports **multiple channels per server**, with each channel having its 
 
 ## ⚙️ How It Works
 
+### Two independent guards
+
+Every accepted meme must pass **both** checks:
+
+1. **Daily limit** - how many memes you may post within the reset window.
+2. **Cooldown** - the minimum time that must pass between two accepted memes.
+
+A message blocked by either guard is deleted and **does not count** against the daily limit - only accepted memes increment your tally and start your cooldown. **Maximized** members skip both guards entirely.
+
 ### Message Flow
 
 ```
-User sends a message
+Message in a tracked channel (non-admin)
         │
         ▼
-   Is it a bot? ──── Yes ──→ Ignore
-        │
-       No
-        │
+  Channel locked? ─── Yes ──→ Delete 🗑️
+        │ No
         ▼
-  Is it in a
-  tracked channel? ── No ──→ Ignore
-        │
-       Yes
-        │
+  Allowed role? ───── No  ──→ Delete 🗑️   (if roles are set)
+        │ Yes
         ▼
-  Is user an Admin? ── Yes ──→ Allow ✅
-        │
-       No
-        │
+  Member blocked? ─── Yes ──→ Delete 🗑️
+        │ No
         ▼
-  Is this channel locked? ── Yes ──→ Delete 🗑️
-        │
-       No
-        │
+  Maximized? ──────── Yes ──→ Allow ✅
+        │ No
         ▼
-  Does user have an
-  allowed role? ──────── No ──→ Delete 🗑️
-  (if roles are set)
-        │
-       Yes
-        │
+  Daily limit reached? ─ Yes ──→ Delete 🗑️ (doesn't count)
+        │ No
         ▼
-  Is user blocked? ──── Yes ──→ Delete 🗑️
-        │
-       No
-        │
+  Still in cooldown? ─── Yes ──→ Delete 🗑️ (doesn't count)
+        │ No
         ▼
-  Is user over the
-  message limit? ────── Yes ──→ Delete 🗑️
-        │
-       No
-        │
-        ▼
-     Allow ✅
+  Allow ✅  (count +1, cooldown starts)
 ```
 
-### Rate Limiting System
-
-Unlike simple daily resets, the bot uses a **per-user sliding window**:
-
-1. When a user sends their **first message**, a timer starts for that user
-2. The user can send up to `limit` messages within the `resettime` window
-3. Any messages beyond the limit are **automatically deleted**
-4. Once the window expires, the count resets and they can post again
-
-**Example:** With `limit: 3` and `resettime: 12h`:
-- User posts 3 memes → ✅ All allowed
-- User tries to post a 4th → 🗑️ Deleted
-- 12 hours later → Counter resets, user can post 3 more
+**Example** - `limit: 5`, `cooldown: 1h`, `window: 24h`:
+- A member may post **5 memes per day**, at most **one per hour**.
+- A 6th meme (or a 2nd within the hour) is deleted automatically.
+- The daily count resets 24h after their first post of the window.
 
 ---
 
@@ -154,29 +129,24 @@ Unlike simple daily resets, the bot uses a **per-user sliding window**:
 - **Node.js** v16.9.0 or higher ([Download](https://nodejs.org/))
 - A **Discord account** with a server you have admin access to
 
-### Step 1: Clone the Repository
+### Step 1: Clone & install
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/meme-guardian-bot.git
 cd meme-guardian-bot
-```
-
-### Step 2: Install Dependencies
-
-```bash
 npm install
 ```
 
-### Step 3: Create a Discord Bot
+### Step 2: Create a Discord Bot
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
-2. Click **"New Application"** and give it a name
-3. Navigate to **Bot** → **"Reset Token"** and copy your bot token
+2. **New Application** → name it
+3. **Bot** → **Reset Token** → copy the token
 4. Under **Privileged Gateway Intents**, enable:
    - ✅ Message Content Intent
    - ✅ Server Members Intent
 
-### Step 4: Configure Environment
+### Step 3: Configure environment
 
 Create a `.env` file in the project root:
 
@@ -184,301 +154,229 @@ Create a `.env` file in the project root:
 DISCORD_TOKEN=your_bot_token_here
 ```
 
-> ⚠️ **Never share or commit your bot token.** The `.gitignore` already excludes `.env`.
+> ⚠️ Never share or commit your bot token. `.gitignore` already excludes `.env` and `data.json`.
 
-### Step 5: Invite the Bot to Your Server
+### Step 4: Invite the bot
 
-1. In the Developer Portal, go to **OAuth2** → **URL Generator**
-2. Select scopes: **`bot`**, **`applications.commands`**
-3. Select bot permissions:
-   - ✅ Administrator
-   - ✅ Send Messages
-   - ✅ Manage Messages
-   - ✅ Read Message History
-   - ✅ Use Application Commands
-4. Copy the generated URL and open it in your browser to add the bot
+In **OAuth2 → URL Generator**, select scopes **`bot`** and **`applications.commands`**, then permissions: **Administrator** (or at minimum **Send Messages**, **Manage Messages**, **Read Message History**, **Use Application Commands**). Open the generated URL to add it.
 
-### Step 6: Start the Bot
+### Step 5: Start it
 
 ```bash
 npm start
 ```
 
-You should see:
 ```
 Bot is ready! Logged in as YourBot#1234
 Commands registered
 ```
 
-> 📝 **Note:** Global slash commands can take up to **1 hour** to appear in Discord the first time. After that, updates are instant.
+> 📝 Global slash commands can take up to **1 hour** to appear the first time. After that, updates are instant.
 
 ---
 
 ## 📋 Commands Reference
 
-### ⭐ `/setup` — The All-in-One Command
-
-Configure **everything** in a single command. All parameters are optional — only include what you want to change. Settings apply to **all tracked channels** in the server.
-
-| Parameter | Type | Description | Example |
-|-----------|------|-------------|---------|
-| `channel` | Channel | Channel to add to tracking | `#memes` |
-| `limit` | Integer | Max messages per window | `5` |
-| `resettime` | String | Time until counts reset | `24h`, `3d`, `12h` |
-| `roles` | String | Allowed role IDs (space-separated), or `clear` | `123456 789012` |
-| `blockuser` | User | Block a user | `@spammer` |
-| `unblockuser` | User | Unblock a user | `@forgiven` |
-| `lockdown` | String | `on`, `off`, or a duration | `on`, `24h`, `off` |
-
----
-
-### Individual Commands
-
-#### 👤 Everyone
+### 👤 Everyone
 
 | Command | Description |
 |---------|-------------|
-| `/info [channel]` | Shows your message count, time until reset, blocked status, and lockdown status |
+| `/info [channel]` | Your memes used today, what's left, your cooldown, and when it resets. Defaults to the channel you run it in. Reply is private. |
 
-#### 👑 Admin Only
+### 👑 Admin only
 
+#### Channels
 | Command | Description |
 |---------|-------------|
-| `/addchannel <channel> [limit] [resettime]` | Add a channel to track with optional settings |
-| `/removechannel <channel>` | Remove a channel from tracking |
-| `/listchannels` | List all tracked channels |
-| `/setlimit <number> [channel]` | Set max messages per window (applies to all or specific channel) |
-| `/setresettime <duration> [channel]` | Set reset time (applies to all or specific channel) |
-| `/lockdown <channel> [duration]` | Lock a specific channel — no one can talk |
-| `/unlock <channel>` | Remove lockdown from a specific channel |
-| `/blockuser <user> [channel]` | Block a user (specific channel or all) |
-| `/unblockuser <user> [channel]` | Unblock a user (specific channel or all) |
-| `/setroles <role IDs> [channel]` | Set allowed roles (applies to all or specific channel) |
-| `/clearroles [channel]` | Remove role restrictions (applies to all or specific channel) |
-| `/reset <user> [channel]` | Reset a user's count (specific channel or all) |
-| `/dashboard` | View main dashboard with all channels overview |
-| `/channeldashboard <channel>` | View detailed stats for a specific channel |
-| `/help` | Show all available commands with detailed information |
+| `/setup [channel] [limit] [cooldown] [resettime] [roles] [blockuser] [unblockuser] [lockdown]` | Configure everything at once (applies to all tracked channels) |
+| `/addchannel <channel> [limit] [cooldown] [resettime]` | Start tracking a channel |
+| `/removechannel <channel>` | Stop tracking a channel |
+| `/listchannels` | List tracked channels and their settings |
+| `/channeldashboard <channel>` | Open the control panel for one channel |
+| `/dashboard` | Open the multi-channel control center |
+
+#### Limits & cooldown
+| Command | Description |
+|---------|-------------|
+| `/setlimit <number> [channel]` | Daily limit (default 5). No channel = all channels |
+| `/setcooldown <time\|off> [channel]` | Time between posts (default 1h). `off` disables it |
+| `/setresettime <duration> [channel]` | Length of the daily window |
+| `/setuserlimit <user> <limit> [channel]` | Per-member override (use a huge number to maximize) |
+
+#### Members
+| Command | Description |
+|---------|-------------|
+| `/checkuser <user> [channel]` | Look up a member's status - **does not ping** them |
+| `/reset <user> [channel]` | Reset a member's daily count |
+| `/blockuser <user> [channel]` | Block a member |
+| `/unblockuser <user> [channel]` | Unblock a member |
+
+#### Channel control
+| Command | Description |
+|---------|-------------|
+| `/lockdown <channel> [duration]` | Freeze a channel (optional auto-expire) |
+| `/unlock <channel>` | Remove a lockdown |
+| `/setroles <role IDs> [channel]` | Restrict posting to roles |
+| `/clearroles [channel]` | Remove the role restriction |
+| `/help` | Full command reference inside Discord |
+
+### Duration format
+
+`30m` · `6h` · `24h` · `3d` · `1d12h` · `2d6h30m`. Cooldown also accepts `off`.
 
 ---
 
-### Duration Format
+## 🎛️ The Dashboard
 
-Durations are flexible and support any combination:
+`/dashboard` opens the **Control Center**:
 
-| Input | Meaning |
-|-------|---------|
-| `30m` | 30 minutes |
-| `6h` | 6 hours |
-| `24h` | 24 hours |
-| `3d` | 3 days |
-| `1d12h` | 1 day and 12 hours |
-| `2d6h30m` | 2 days, 6 hours, 30 minutes |
+- **Overview** - every tracked channel with its limit, cooldown, window and live stats. A dropdown jumps into any channel; buttons **Add Channel** (channel picker) and **Remove Channel** work inline - no commands needed.
+- **Channel panel** - shows status, limit, cooldown, window, roles and top members, with buttons to:
+  - **Set Limit / Set Cooldown / Set Window** via pop-up text inputs
+  - **Lock / Unlock**, **Reset Counts**, **Reset Stats**, **Unblock All**, **Clear Roles**
+  - **Recent 10** - the last 10 members to post (newest first)
+  - **Today's List** - the full, paginated list of everyone who posted this window
+  - **Manage / Look Up Member** - pick any member (no ping) to see their status and **set a custom limit**, **maximize**, **clear override**, **reset usage**, or **block/unblock**
+
+All dashboard replies are private to the admin who opened them, and member lists never send pings.
 
 ---
 
 ## 💡 Usage Examples
 
-### Track Multiple Channels
+```
+/addchannel #memes limit:5 cooldown:1h resettime:24h
+```
+> 5 memes/day, one per hour, in #memes.
 
 ```
-/addchannel #memes limit:3 resettime:24h
-/addchannel #general limit:10 resettime:1h
+/setcooldown 30m #memes
+/setlimit 10 #memes
 ```
-> Each channel has its own independent limit, reset time, and stats.
-
-### View Channel Dashboard
+> Loosen #memes to 10/day, one every 30 minutes.
 
 ```
-/channeldashboard #memes
+/setuserlimit @TrustedPoster 9999999 #memes
 ```
-> Shows detailed stats for the memes channel — user activity, blocked users, etc.
-
-### Quick Setup — Limit a Memes Channel
+> Effectively unlimited for one member (same as **Maximize** in the dashboard).
 
 ```
-/setup channel:#memes limit:3 resettime:24h
+/checkuser @SomeMember
 ```
-> Users can post 3 memes per day. Done.
-
-### Emergency Lockdown
-
-```
-/lockdown #memes
-```
-> Instantly blocks all conversation in #memes. Only admins can still type.
-
-### Timed Lockdown — Cool Down Period
+> Privately see their usage and cooldown - they're never notified.
 
 ```
 /lockdown #memes 2h
 ```
-> Locks channel for 2 hours, then automatically reopens.
-
-### Restrict to Specific Roles
-
-```
-/setup channel:#verified-memes roles:1234567890 9876543210
-```
-> Only members with those role IDs can post.
-
-### Block a Spammer and Lock for 30 Minutes
-
-```
-/setup channel:#memes blockuser:@spammer lockdown:30m
-```
-> Block the user AND lock the channel — all in one command.
-
-### Check Your Status (as a regular user)
+> Freeze #memes for two hours, then auto-reopen.
 
 ```
 /info
 ```
-> Shows: your message count, the limit, when it resets, and if the channel is locked.
-
-### View Main Dashboard (admin)
-
-```
-/dashboard
-```
-> Shows an overview of all tracked channels with summary stats. Click "View Channel Stats" to see per-channel details.
-
-### Get Help (admin)
-
-```
-/help
-```
-> Shows a detailed list of all available commands with descriptions and examples.
+> What a member runs to see their own remaining memes and cooldown.
 
 ---
 
 ## 🏗️ Architecture
 
-### Tech Stack
-
 | Technology | Purpose |
 |------------|---------|
-| **Node.js** | Runtime environment |
-| **discord.js v14** | Discord API wrapper |
-| **dotenv** | Environment variable management |
+| **Node.js** | Runtime |
+| **discord.js v14** | Discord API (slash commands, buttons, modals, select menus) |
+| **dotenv** | Environment variables |
 
 ### Project Structure
 
 ```
 meme-guardian-bot/
-├── bot.js              # Main bot logic — all commands and event handlers
+├── bot.js              # All bot logic - commands, dashboard, enforcement
 ├── package.json        # Dependencies and scripts
 ├── data.json           # Persisted state (auto-created, not committed)
 ├── .env                # Bot token (not committed)
-├── .gitignore          # Files excluded from git
-└── README.md           # You are here
+├── .gitignore
+└── README.md
 ```
 
 ### Data Storage
 
-All settings and live state are persisted to a local `data.json` file, so the bot can restart, crash, or update without losing anything. The file is created automatically and is keyed **per channel** (so each tracked channel keeps its own independent state):
+State is persisted to `data.json`, keyed **per channel** so each tracked channel is independent. The file is created automatically.
 
-| Data Type | Persistence |
-|-----------|-------------|
-| `trackedChannels` | Per-guild set of tracked channels |
-| `messageCounts` | Per-channel, per-user timestamps and counts |
-| `rateLimit` | Per-channel message limit |
-| `resetTime` | Per-channel reset window |
-| `blockedUsers` | Per-channel blocked users |
-| `allowedRoles` | Per-channel role restrictions |
-| `lockedChannels` | Per-channel lockdown state (auto-unlock timers resume after restart) |
-| `totalMessagesTracked` / `totalMessagesDeleted` | Per-channel statistics |
+| Data | Scope |
+|------|-------|
+| `trackedChannels` | Per guild: set of tracked channels |
+| `messageCounts` | Per channel + member: count, window start, last post time |
+| `rateLimit` | Per channel: daily limit |
+| `cooldown` | Per channel: time between posts |
+| `resetTime` | Per channel: window length |
+| `userLimits` | Per channel + member: limit override |
+| `blockedUsers` | Per channel + member: block flag |
+| `allowedRoles` | Per channel: allowed roles |
+| `lockedChannels` | Per channel: lockdown state (auto-unlock timers resume on restart) |
+| `totalMessagesTracked` / `totalMessagesDeleted` | Per channel: stats |
 
-> 💾 **Zero-Config Database:** No MongoDB or SQL needed — the bot manages the JSON file automatically. Config and moderation actions are written immediately; high-frequency per-message count updates are coalesced (at most one write per second) to keep a busy channel from blocking the event loop, and a pending write is flushed on graceful shutdown (`SIGINT` / `SIGTERM`).
+> 💾 **Zero-config:** no database needed. Config and admin actions are written immediately; high-frequency per-message updates are coalesced (≤1 write/sec) to avoid blocking the event loop, and pending writes are flushed on graceful shutdown (`SIGINT`/`SIGTERM`). Stale counters are pruned automatically.
 
 ---
 
 ## ❓ FAQ
 
 <details>
-<summary><b>Why can't I see the bot's commands?</b></summary>
+<summary><b>What's the difference between the daily limit and the cooldown?</b></summary>
 
-Only users with **Administrator** permission can see admin commands. Regular users can only see `/info`. This is enforced both by Discord's permission system and the bot's code.
+The **limit** caps how many memes a member can post per window (e.g. 5/day). The **cooldown** is the minimum gap between two accepted memes (e.g. 1h). Both must pass; a blocked message is deleted and doesn't count toward the limit.
 </details>
 
 <details>
-<summary><b>The commands aren't showing up at all!</b></summary>
+<summary><b>What does "maximize" do?</b></summary>
 
-Global slash commands can take up to **1 hour** to register with Discord the first time. Wait a bit and try again. You can also try:
-- Restarting Discord (Ctrl+R)
-- Checking that the bot is online in your server
+It gives a member an unlimited allowance in that channel and skips the cooldown too - they can post freely. Use **Clear Override** (dashboard) to return them to the channel default.
+</details>
+
+<details>
+<summary><b>Can I look up a member without pinging them?</b></summary>
+
+Yes. `/checkuser` and the dashboard's **Manage / Look Up Member** picker show status without sending a notification - all member lists suppress mentions.
 </details>
 
 <details>
 <summary><b>Does the bot save data between restarts?</b></summary>
 
-Yes. The bot saves everything (tracked channels, per-channel limits, locked channels, blocked users, and per-user message progress) to a local `data.json` file. When the bot restarts, it loads that state and resumes exactly where it left off — including auto-unlock timers for timed lockdowns.
+Yes - everything is saved to `data.json` and reloaded on boot, including auto-unlock timers for timed lockdowns.
 </details>
 
 <details>
-<summary><b>Can I use this bot in multiple servers?</b></summary>
+<summary><b>Can I use it in multiple servers / channels?</b></summary>
 
-Yes! The bot supports multiple servers simultaneously. Each server has its own independent configuration, tracked channels, limits, blocked users, and lockdown states.
+Yes. Multiple servers are supported, and within each server you can track multiple channels, each with fully independent settings and stats.
 </details>
 
 <details>
-<summary><b>Does the bot delete its own messages?</b></summary>
+<summary><b>Can admins be limited or locked out?</b></summary>
 
-No. All bot responses use Discord's **ephemeral messages** — they're only visible to the person who ran the command and disappear automatically. The bot never posts visible messages in the channel.
-</details>
-
-<details>
-<summary><b>Can admins be rate-limited or locked out?</b></summary>
-
-No. Users with the **Administrator** permission bypass all restrictions — rate limits, lockdowns, role restrictions, and blocking.
-</details>
-
-<details>
-<summary><b>What's the difference between blocking a user and a lockdown?</b></summary>
-
-- **Block** (`/blockuser`): Targets a **specific user** — their messages are always deleted, even when there's no lockdown.
-- **Lockdown** (`/lockdown`): Blocks **everyone** (except admins) from talking in the specified channel. Can be timed.
-</details>
-
-<details>
-<summary><b>How is data structured for multiple channels?</b></summary>
-
-Each tracked channel has its own independent:
-- Message limit and reset time
-- Role restrictions
-- Blocked users list
-- Lockdown state
-- Per-user message counts
-- Statistics (messages tracked/deleted)
-
-The `/dashboard` command shows an overview of all channels, and `/channeldashboard` shows detailed stats for a specific channel.
+No. Administrators bypass limits, cooldowns, lockdowns, role restrictions and blocks.
 </details>
 
 ---
 
 ## 🤝 Contributing
 
-Contributions are welcome! Here's how:
+1. **Fork** the repo
+2. **Branch** (`git checkout -b feature/amazing-feature`)
+3. **Commit** (`git commit -m 'Add amazing feature'`)
+4. **Push** and open a **Pull Request**
 
-1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
-3. **Commit** your changes (`git commit -m 'Add amazing feature'`)
-4. **Push** to the branch (`git push origin feature/amazing-feature`)
-5. **Open** a Pull Request
-
-### Ideas for Contributions
+### Ideas
 
 - [ ] Per-guild timezone configuration
-- [ ] Warning system before hitting the limit
-- [ ] Logging channel for moderation actions
-- [ ] Web dashboard for configuration
-- [ ] Custom auto-response when a message is deleted
+- [ ] Warning to a member as they approach their limit
+- [ ] Moderation log channel
+- [ ] Web dashboard
 
 ---
 
 ## 📄 License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+MIT - see [LICENSE](LICENSE).
 
 ---
 
