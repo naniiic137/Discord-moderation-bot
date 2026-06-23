@@ -92,6 +92,24 @@ function clearGuildCounts(guildId) {
     for (const channelId of channels) clearChannelCounts(channelId);
 }
 
+// Nudge a member's CURRENT-window usage by delta (delta -1 gives a post back,
+// e.g. after they deleted a meme; +1 consumes one). Clamped to [0, their
+// effective limit] so it only changes how many posts are left right now, never
+// the overall/maximum limit. Starts a fresh window if the old one elapsed.
+function adjustCurrentUsage(channelId, userId, delta) {
+    const key = getChannelUserKey(channelId, userId);
+    const now = Date.now();
+    const windowMs = getResetWindow(channelId);
+    let entry = messageCounts.get(key);
+    if (!entry) entry = { startTime: now, count: 0, lastSubmission: 0 };
+    if (now - entry.startTime >= windowMs) { entry.startTime = now; entry.count = 0; }
+    const limit = getEffectiveLimit(channelId, userId);
+    const cap = isUnlimited(limit) ? Number.MAX_SAFE_INTEGER : limit;
+    entry.count = Math.max(0, Math.min(cap, entry.count + delta));
+    messageCounts.set(key, entry);
+    saveData();
+}
+
 // ═══════════════════════════════════════════════════
 //  Persistent Storage — saves settings to data.json
 // ═══════════════════════════════════════════════════
@@ -678,9 +696,9 @@ function buildUserPanel(channelId, userId, guild) {
     const embed = new EmbedBuilder()
         .setTitle('👤 Member limits')
         .setColor(s.blocked ? COLORS.locked : COLORS.primary)
-        .setDescription(`Member: <@${userId}>${name ? ` (${name})` : ''}\nChannel: <#${channelId}>`)
+        .setDescription(`Member: <@${userId}>${name ? ` (${name})` : ''}\nChannel: <#${channelId}>\n\n⬆️ / ⬇️ adjust **posts left this window** (e.g. give one back after a deleted meme) without changing their overall limit.`)
         .addFields(
-            { name: 'Used today', value: isUnlimited(s.limit) ? '∞ (maximized)' : `**${s.used}/${s.limit}** ${progressBar(s.used, s.limit)}`, inline: false },
+            { name: 'Used today', value: isUnlimited(s.limit) ? '∞ (maximized)' : `**${s.used}/${s.limit}** ${progressBar(s.used, s.limit)} · **${s.remaining}** left`, inline: false },
             { name: 'Per-user override', value: s.hasOverride ? (isUnlimited(s.limit) ? '∞ maximized' : `**${s.limit}**`) : '*none (uses channel default)*', inline: true },
             { name: 'Cooldown', value: s.cooldownMs <= 0 ? 'off' : (s.cooldownEndsAt ? `next ${tsR(s.cooldownEndsAt)}` : 'ready'), inline: true },
             { name: 'Daily reset', value: s.resetAt ? tsR(s.resetAt) : 'not started', inline: true },
@@ -695,6 +713,10 @@ function buildUserPanel(channelId, userId, guild) {
             new ButtonBuilder().setCustomId(`u_setlimit:${channelId}:${userId}`).setLabel('Set Custom Limit').setEmoji('✏️').setStyle(ButtonStyle.Primary),
             new ButtonBuilder().setCustomId(`u_maximize:${channelId}:${userId}`).setLabel('Maximize').setEmoji('♾️').setStyle(ButtonStyle.Success),
             new ButtonBuilder().setCustomId(`u_clearoverride:${channelId}:${userId}`).setLabel('Clear Override').setEmoji('↩️').setStyle(ButtonStyle.Secondary).setDisabled(!s.hasOverride),
+        ),
+        new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`u_usageup:${channelId}:${userId}`).setLabel('+1 left').setEmoji('⬆️').setStyle(ButtonStyle.Success).setDisabled(isUnlimited(s.limit) || s.used <= 0),
+            new ButtonBuilder().setCustomId(`u_usagedown:${channelId}:${userId}`).setLabel('-1 left').setEmoji('⬇️').setStyle(ButtonStyle.Secondary).setDisabled(isUnlimited(s.limit) || s.used >= s.limit),
             new ButtonBuilder().setCustomId(`u_resetusage:${channelId}:${userId}`).setLabel('Reset Usage').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
         ),
         new ActionRowBuilder().addComponents(
@@ -1051,15 +1073,33 @@ async function handleButton(interaction) {
             return showView(interaction, buildChannelDashboard(channelId, interaction.guild));
 
         case 'ch_manageuser': {
-            const row = new ActionRowBuilder().addComponents(
-                new UserSelectMenuBuilder().setCustomId(`ch_userselect:${channelId}`).setPlaceholder('Pick a member to look up / manage…').setMinValues(1).setMaxValues(1)
-            );
-            const back = new ActionRowBuilder().addComponents(
+            const components = [new ActionRowBuilder().addComponents(
+                new UserSelectMenuBuilder().setCustomId(`ch_userselect:${channelId}`).setPlaceholder('Pick any member to look up / manage…').setMinValues(1).setMaxValues(1)
+            )];
+            // Quick list of members who actually posted this window — the common
+            // case for adjusting someone's count after a delete.
+            const active = activeUsers(channelId).sort((a, b) => b.last - a.last).slice(0, 25);
+            if (active.length) {
+                components.push(new ActionRowBuilder().addComponents(
+                    new StringSelectMenuBuilder().setCustomId(`ch_pickmember:${channelId}`)
+                        .setPlaceholder('… or pick from members who posted this window')
+                        .addOptions(active.map(u => {
+                            const m = interaction.guild?.members?.cache?.get(u.id);
+                            const lim = getEffectiveLimit(channelId, u.id);
+                            return {
+                                label: (m?.displayName || m?.user?.username || `User ${u.id}`).slice(0, 100),
+                                description: (isUnlimited(lim) ? '∞ used' : `${u.count}/${lim} used`).slice(0, 100),
+                                value: u.id,
+                            };
+                        }))
+                ));
+            }
+            components.push(new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId(`ch_refresh:${channelId}`).setLabel('Cancel').setEmoji('✖️').setStyle(ButtonStyle.Secondary)
-            );
+            ));
             const embed = new EmbedBuilder().setTitle('👤 Manage / look up a member').setColor(COLORS.primary)
-                .setDescription(`Select any member to see their limits in <#${channelId}> and adjust them. Selecting a member does **not** ping them.`);
-            return interaction.update({ embeds: [embed], components: [row, back] });
+                .setDescription(`Pick **any member** (top picker) or someone who **posted this window** (list) to see their limits in <#${channelId}> and adjust them. Selecting a member does **not** ping them.`);
+            return interaction.update({ embeds: [embed], components });
         }
 
         // Per-user actions
@@ -1077,6 +1117,12 @@ async function handleButton(interaction) {
         case 'u_resetusage':
             messageCounts.delete(getChannelUserKey(channelId, extra));
             saveData();
+            return showView(interaction, buildUserPanel(channelId, extra, interaction.guild));
+        case 'u_usageup': // give one post back this window (more left)
+            adjustCurrentUsage(channelId, extra, -1);
+            return showView(interaction, buildUserPanel(channelId, extra, interaction.guild));
+        case 'u_usagedown': // consume one this window (fewer left)
+            adjustCurrentUsage(channelId, extra, +1);
             return showView(interaction, buildUserPanel(channelId, extra, interaction.guild));
         case 'u_toggleblock': {
             const key = getChannelUserKey(channelId, extra);
@@ -1111,12 +1157,16 @@ async function handleDmOptout(interaction, guildId) {
 async function handleStringSelect(interaction) {
     if (!interaction.guildId) return;
     if (!await requireAdmin(interaction)) return;
-    const [action] = interaction.customId.split(':');
+    const [action, channelId] = interaction.customId.split(':');
     const value = interaction.values[0];
 
     if (action === 'main_selectchannel') {
         if (!isChannelTracked(interaction.guildId, value)) return showView(interaction, buildMainDashboard(interaction.guild));
         return showView(interaction, buildChannelDashboard(value, interaction.guild));
+    }
+    if (action === 'ch_pickmember') {
+        if (!isChannelTracked(interaction.guildId, channelId)) return showView(interaction, buildMainDashboard(interaction.guild));
+        return showView(interaction, buildUserPanel(channelId, value, interaction.guild));
     }
     if (action === 'main_removechannel_select') {
         removeChannel(interaction.guildId, value);
