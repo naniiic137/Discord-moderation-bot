@@ -245,7 +245,7 @@ Commands registered
   - **Lock / Unlock**, **Reset Counts**, **Reset Stats**, **Unblock All**, **Clear Roles**
   - **Recent 10** - the last 10 members to post (newest first)
   - **Today's List** - the full, paginated list of everyone who posted this window
-  - **Manage / Look Up Member** - pick any member (no ping) to see their status and **set a custom limit**, **maximize**, **clear override**, **reset usage**, or **block/unblock**
+  - **Manage / Look Up Member** - pick any member from the full list, or from a quick list of members who **posted this window** (no ping), to see their status and **set a custom limit**, **maximize**, **clear override**, **reset usage**, **block/unblock**, or nudge their **posts left this window** with the **⬆️ +1 / ⬇️ -1** arrows (give a slot back after a deleted meme, without changing their overall limit)
 
 All dashboard replies are private to the admin who opened them, and member lists never send pings.
 
