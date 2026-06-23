@@ -55,7 +55,8 @@ Each server can track **multiple channels**, every channel keeps its **own indep
 | **🚫 User Blocking** | Permanently block specific members; their messages are deleted on sight |
 | **🎭 Role Restrictions** | Restrict posting to specific roles |
 | **🎛️ Interactive Dashboard** | Configure limits/cooldowns via pop-ups, browse member lists, and manage any member - all from buttons and menus |
-| **🔔 Warn on Delete** | Optionally DM a member when their post is removed, explaining why and when they can post again (one DM per blocked streak, default off) |
+| **🔔 Warn on Delete** | Optionally DM a member when their post is removed, explaining why and when they can post again (one DM per blocked streak, default off). Each DM has an **opt-out button** so the member can silence future alerts (and turn them back on) themselves |
+| **⚠️ Near-Limit Warning** | Optionally post a short, auto-deleting in-channel notice when a member has **1 meme left**, so the next removal is no surprise (default off). Works even when members have DMs disabled |
 | **⏲️ Live Countdowns** | Reset and cooldown times render as Discord timestamps that tick down live in every client |
 | **🔎 Member Lookup** | Check any member's status, or pick them from a menu, **without pinging them** |
 | **💾 Persistent Storage** | All settings and live state are saved to `data.json`; timed lockdowns resume after a restart |
@@ -154,6 +155,7 @@ Create a `.env` file in the project root:
 
 ```env
 DISCORD_TOKEN=your_bot_token_here
+# DATA_DIR=/data   # optional: persist data.json to a mounted volume on hosted platforms (Railway, etc.)
 ```
 
 > ⚠️ Never share or commit your bot token. `.gitignore` already excludes `.env` and `data.json`.
@@ -190,7 +192,7 @@ Commands registered
 #### Channels
 | Command | Description |
 |---------|-------------|
-| `/setup [channel] [limit] [cooldown] [resettime] [roles] [blockuser] [unblockuser] [lockdown] [warn]` | Configure everything at once (applies to all tracked channels) |
+| `/setup [channel] [limit] [cooldown] [resettime] [roles] [blockuser] [unblockuser] [lockdown] [warn] [nearwarn]` | Configure everything at once (applies to all tracked channels) |
 | `/addchannel <channel> [limit] [cooldown] [resettime]` | Start tracking a channel |
 | `/removechannel <channel>` | Stop tracking a channel |
 | `/listchannels` | List tracked channels and their settings |
@@ -205,6 +207,7 @@ Commands registered
 | `/setresettime <duration> [channel]` | Length of the daily window |
 | `/setuserlimit <user> <limit> [channel]` | Per-member override (use a huge number to maximize) |
 | `/setwarn <on\|off> [channel]` | DM members when their post is removed |
+| `/setnearwarn <on\|off> [channel]` | In-channel notice when a member has 1 meme left |
 
 #### Members
 | Command | Description |
@@ -213,6 +216,7 @@ Commands registered
 | `/reset <user> [channel]` | Reset a member's daily count |
 | `/blockuser <user> [channel]` | Block a member |
 | `/unblockuser <user> [channel]` | Unblock a member |
+| `/testdm [user]` | Send a test DM to check the bot can reach a member (defaults to you) |
 
 #### Channel control
 | Command | Description |
@@ -237,6 +241,7 @@ Commands registered
 - **Channel panel** - shows status, limit, cooldown, window, roles and top members, with buttons to:
   - **Set Limit / Set Cooldown / Set Window** via pop-up text inputs
   - **Warn: On/Off** - toggle DMing members when their post is removed
+  - **Near-limit: On/Off** - toggle the auto-deleting in-channel "1 meme left" notice
   - **Lock / Unlock**, **Reset Counts**, **Reset Stats**, **Unblock All**, **Clear Roles**
   - **Recent 10** - the last 10 members to post (newest first)
   - **Today's List** - the full, paginated list of everyone who posted this window
@@ -319,6 +324,8 @@ State is persisted to `data.json`, keyed **per channel** so each tracked channel
 | `totalMessagesTracked` / `totalMessagesDeleted` | Per channel: stats |
 
 > 💾 **Zero-config:** no database needed. Config and admin actions are written immediately; high-frequency per-message updates are coalesced (≤1 write/sec) to avoid blocking the event loop, and pending writes are flushed on graceful shutdown (`SIGINT`/`SIGTERM`). Stale counters are pruned automatically.
+
+> 🚢 **Hosted/ephemeral platforms (Railway, etc.):** the container filesystem is wiped on every deploy and restart, which would reset all counts and settings. Mount a persistent volume and set `DATA_DIR` to its mount path (e.g. `/data`) so `data.json` lives on the volume and survives restarts.
 
 ---
 

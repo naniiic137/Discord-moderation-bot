@@ -9,7 +9,12 @@ const {
 const fs = require('fs');
 const path = require('path');
 
-const DATA_FILE = path.join(__dirname, 'data.json');
+// Persisted-state location. Point DATA_DIR at a mounted volume (e.g. /data on
+// Railway) so counts and settings survive restarts and redeploys; falls back to
+// the app folder for local runs.
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (err) { console.error('Could not create DATA_DIR:', err.message); }
+const DATA_FILE = path.join(DATA_DIR, 'data.json');
 
 const client = new Client({
     intents: [
@@ -31,6 +36,8 @@ const blockedUsers = new Map();    // chanUserKey -> true
 const allowedRoles = new Map();    // channelId -> [roleId]
 const lockedChannels = new Map();  // channelId -> { lockedAt, expiresAt }
 const warnOnDelete = new Map();    // channelId -> true (DM a member when their post is removed)
+const nearLimitWarn = new Map();   // channelId -> true (in-channel notice when a member has 1 post left)
+const dmOptOut = new Map();         // `${guildId}:${userId}` -> true (member opted out of notification DMs)
 const totalMessagesDeleted = new Map(); // channelId -> count
 const totalMessagesTracked = new Map(); // channelId -> count
 
@@ -109,6 +116,8 @@ function saveData() {
             allowedRoles: Object.fromEntries(allowedRoles),
             lockedChannels: Object.fromEntries(lockedChannels),
             warnOnDelete: Object.fromEntries(warnOnDelete),
+            nearLimitWarn: Object.fromEntries(nearLimitWarn),
+            dmOptOut: Object.fromEntries(dmOptOut),
             totalMessagesDeleted: Object.fromEntries(totalMessagesDeleted),
             totalMessagesTracked: Object.fromEntries(totalMessagesTracked),
             messageCounts: Object.fromEntries(messageCounts),
@@ -153,6 +162,8 @@ function loadData() {
         restore(data.blockedUsers, blockedUsers);
         restore(data.allowedRoles, allowedRoles);
         restore(data.warnOnDelete, warnOnDelete);
+        restore(data.nearLimitWarn, nearLimitWarn);
+        restore(data.dmOptOut, dmOptOut);
         restore(data.totalMessagesDeleted, totalMessagesDeleted);
         restore(data.totalMessagesTracked, totalMessagesTracked);
         restore(data.messageCounts, messageCounts);
@@ -376,9 +387,9 @@ async function handleMessage(message) {
         totalMessagesDeleted.set(channelId, (totalMessagesDeleted.get(channelId) || 0) + 1);
         // One DM per blocked streak: warn only if enabled and we haven't already
         // warned since their last accepted post (entry.warned resets on accept).
-        if (warnEnabled && !entry.warned) {
+        if (warnEnabled && !entry.warned && !dmOptOut.has(`${guildId}:${userId}`)) {
             entry.warned = true;
-            message.author.send({ content: reason, allowedMentions: NO_PING }).catch(() => {});
+            message.author.send({ content: reason, components: [dmOptOutRow(guildId)], allowedMentions: NO_PING }).catch(() => {});
         }
         scheduleSave();
     };
@@ -400,6 +411,16 @@ async function handleMessage(message) {
     entry.lastSubmission = now;
     entry.warned = false;
     scheduleSave();
+
+    // Approaching-limit notice: fires on the post that leaves exactly one meme
+    // left. Sent in-channel (then auto-deleted) so it reaches members even when
+    // they have DMs disabled, without permanently cluttering the channel.
+    if (nearLimitWarn.get(channelId) && !isUnlimited(limit) && limit - entry.count === 1) {
+        message.channel.send({
+            content: `⚠️ <@${userId}> heads up: that's **${entry.count}/${limit}**, you have **1 meme left** today. Resets ${tsR(entry.startTime + windowMs)}.`,
+            allowedMentions: { users: [userId] },
+        }).then(m => setTimeout(() => m.delete().catch(() => {}), 12_000)).catch(() => {});
+    }
 }
 
 // ═══════════════════════════════════════════════════
@@ -512,6 +533,7 @@ function buildChannelDashboard(channelId, guild) {
         { name: '🎭 Roles', value: roles && roles.length ? roles.map(r => `<@&${r}>`).join(' ') : '*Everyone*', inline: true },
         { name: '🚫 Blocked', value: `**${blocked.length}**`, inline: true },
         { name: '🔔 Warn on delete', value: warnOnDelete.get(channelId) ? '**on** (DMs members)' : 'off', inline: true },
+        { name: '⚠️ Near-limit warn', value: nearLimitWarn.get(channelId) ? '**on** (1 left, in-channel)' : 'off', inline: true },
     );
 
     if (activeLock) {
@@ -556,6 +578,7 @@ function buildChannelDashboard(channelId, guild) {
             new ButtonBuilder().setCustomId(`ch_recent:${channelId}`).setLabel('Recent 10').setEmoji('🕒').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId(`ch_fulllist:${channelId}:0`).setLabel("Today's List").setEmoji('📋').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId(`ch_manageuser:${channelId}`).setLabel('Manage / Look Up Member').setEmoji('👤').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId(`ch_togglenear:${channelId}`).setLabel(nearLimitWarn.get(channelId) ? 'Near-limit: On' : 'Near-limit: Off').setEmoji('⚠️').setStyle(nearLimitWarn.get(channelId) ? ButtonStyle.Success : ButtonStyle.Secondary),
         ),
         new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`ch_resetcounts:${channelId}`).setLabel('Reset Counts').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
@@ -663,6 +686,7 @@ function buildUserPanel(channelId, userId, guild) {
             { name: 'Daily reset', value: s.resetAt ? tsR(s.resetAt) : 'not started', inline: true },
             { name: 'Blocked', value: s.blocked ? '🚫 yes' : 'no', inline: true },
             { name: 'Last post', value: s.lastSubmission ? tsR(s.lastSubmission) : 'never', inline: true },
+            { name: 'DM alerts', value: dmOptOut.has(`${guild?.id}:${userId}`) ? '🔕 opted out' : '🔔 on', inline: true },
         )
         .setTimestamp();
 
@@ -719,6 +743,18 @@ function numberModal(customId, title, label, placeholder, value) {
     );
 }
 
+// Opt-out toggle attached to notification DMs. customId carries the guild so the
+// member can silence (or restore) that server's alerts from inside the DM, where
+// there is no guild context.
+function dmOptOutRow(guildId) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`dm_optout:${guildId}`)
+            .setLabel('🔕 Turn off these alerts')
+            .setStyle(ButtonStyle.Danger)
+    );
+}
+
 client.on('messageCreate', handleMessage);
 
 // ═══════════════════════════════════════════════════
@@ -741,7 +777,8 @@ client.on('ready', async () => {
             .addUserOption(o => o.setName('blockuser').setDescription('Block a user').setRequired(false))
             .addUserOption(o => o.setName('unblockuser').setDescription('Unblock a user').setRequired(false))
             .addStringOption(o => o.setName('lockdown').setDescription('"on", "off", or a duration like 24h').setRequired(false))
-            .addStringOption(o => o.setName('warn').setDescription('DM members when their post is removed: "on" or "off"').setRequired(false))),
+            .addStringOption(o => o.setName('warn').setDescription('DM members when their post is removed: "on" or "off"').setRequired(false))
+            .addStringOption(o => o.setName('nearwarn').setDescription('In-channel notice when a member has 1 meme left: "on" or "off"').setRequired(false))),
 
         adminOpt(new SlashCommandBuilder()
             .setName('addchannel')
@@ -784,6 +821,13 @@ client.on('ready', async () => {
         adminOpt(new SlashCommandBuilder()
             .setName('setwarn')
             .setDescription('DM members when their post is removed (on/off)')
+            .addStringOption(o => o.setName('state').setDescription('on or off').setRequired(true)
+                .addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' }))
+            .addChannelOption(o => o.setName('channel').setDescription('Specific channel (else all)').setRequired(false))),
+
+        adminOpt(new SlashCommandBuilder()
+            .setName('setnearwarn')
+            .setDescription('In-channel notice when a member has 1 meme left (on/off)')
             .addStringOption(o => o.setName('state').setDescription('on or off').setRequired(true)
                 .addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' }))
             .addChannelOption(o => o.setName('channel').setDescription('Specific channel (else all)').setRequired(false))),
@@ -848,6 +892,11 @@ client.on('ready', async () => {
             .setDescription('Remove the lockdown from a channel')
             .addChannelOption(o => o.setName('channel').setDescription('Channel to unlock').setRequired(true))),
 
+        adminOpt(new SlashCommandBuilder()
+            .setName('testdm')
+            .setDescription('Send a test DM to check whether the bot can reach a member')
+            .addUserOption(o => o.setName('user').setDescription('Who to DM (default: you)').setRequired(false))),
+
         adminOpt(new SlashCommandBuilder().setName('help').setDescription('Show all commands and how the bot works')),
     ];
 
@@ -890,9 +939,14 @@ async function requireAdmin(interaction) {
 
 // ── Buttons ──
 async function handleButton(interaction) {
+    const [action, channelId, extra] = interaction.customId.split(':');
+
+    // Notification opt-out is clicked from a DM (no guild context, by a regular
+    // member), so it must run before the guild and admin guards below.
+    if (action === 'dm_optout') return handleDmOptout(interaction, channelId);
+
     const guildId = interaction.guildId;
     if (!guildId) return;
-    const [action, channelId, extra] = interaction.customId.split(':');
 
     // Everything below is admin-only.
     if (!await requireAdmin(interaction)) return;
@@ -990,6 +1044,11 @@ async function handleButton(interaction) {
             else warnOnDelete.set(channelId, true);
             saveData();
             return showView(interaction, buildChannelDashboard(channelId, interaction.guild));
+        case 'ch_togglenear':
+            if (nearLimitWarn.get(channelId)) nearLimitWarn.delete(channelId);
+            else nearLimitWarn.set(channelId, true);
+            saveData();
+            return showView(interaction, buildChannelDashboard(channelId, interaction.guild));
 
         case 'ch_manageuser': {
             const row = new ActionRowBuilder().addComponents(
@@ -1027,6 +1086,25 @@ async function handleButton(interaction) {
             return showView(interaction, buildUserPanel(channelId, extra, interaction.guild));
         }
     }
+}
+
+// ── DM notification opt-out (clicked by a member inside a DM) ──
+async function handleDmOptout(interaction, guildId) {
+    const key = `${guildId}:${interaction.user.id}`;
+    const optedOut = !dmOptOut.has(key); // toggle: true = now opted out
+    if (optedOut) dmOptOut.set(key, true);
+    else dmOptOut.delete(key);
+    saveData();
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`dm_optout:${guildId}`)
+            .setLabel(optedOut ? '🔔 Turn alerts back on' : '🔕 Turn off these alerts')
+            .setStyle(optedOut ? ButtonStyle.Success : ButtonStyle.Danger)
+    );
+    const note = optedOut
+        ? '🔕 Done. You will no longer receive meme-limit DMs from this server. Tap below to turn them back on anytime.'
+        : '🔔 Meme-limit DMs are back on. Tap below to turn them off again.';
+    return interaction.update({ content: note, components: [row] });
 }
 
 // ── String select menus ──
@@ -1121,6 +1199,7 @@ function removeChannel(guildId, channelId) {
     allowedRoles.delete(channelId);
     lockedChannels.delete(channelId);
     warnOnDelete.delete(channelId);
+    nearLimitWarn.delete(channelId);
     totalMessagesTracked.delete(channelId);
     totalMessagesDeleted.delete(channelId);
     for (const key of userLimits.keys()) if (key.startsWith(channelId + ':')) userLimits.delete(key);
@@ -1190,6 +1269,20 @@ async function handleCommand(interaction) {
             .setDescription(`Channel: <#${cid}>\n\n${userStatusText(cid, target.id)}`)
             .setTimestamp();
         return interaction.reply({ embeds: [embed], ephemeral: true, allowedMentions: NO_PING });
+    }
+
+    if (name === 'testdm') {
+        const target = interaction.options.getUser('user') || interaction.user;
+        try {
+            await target.send(`✅ Test DM from **Meme Guardian** in **${interaction.guild.name}**. If you can read this, the bot can DM you, so limit warnings will reach you here.`);
+            return interaction.reply({ content: `✅ DM delivered to <@${target.id}>. They can receive bot DMs.`, ephemeral: true, allowedMentions: NO_PING });
+        } catch (err) {
+            return interaction.reply({
+                content: `❌ Could not DM <@${target.id}>. They most likely have **"Allow direct messages"** turned off for this server (right-click the server → Privacy Settings), or have blocked the bot. Warn-on-delete notices will not reach them either.\nDiscord said: \`${err.message}\``,
+                ephemeral: true,
+                allowedMentions: NO_PING,
+            });
+        }
     }
 
     if (name === 'setup') {
@@ -1274,6 +1367,14 @@ async function handleCommand(interaction) {
             else results.push(`⚠️ Invalid warn "${warnStr}"`);
         }
 
+        const nearStr = interaction.options.getString('nearwarn');
+        if (nearStr) {
+            const lower = nearStr.toLowerCase().trim();
+            if (['on', 'yes', 'true'].includes(lower)) { eachTrackedChannel(guildId, cid => nearLimitWarn.set(cid, true)); results.push('⚠️ Near-limit warnings on (all channels)'); }
+            else if (['off', 'no', 'false'].includes(lower)) { eachTrackedChannel(guildId, cid => nearLimitWarn.delete(cid)); results.push('✅ Near-limit warnings off (all channels)'); }
+            else results.push(`⚠️ Invalid nearwarn "${nearStr}"`);
+        }
+
         if (!results.length) return interaction.reply({ content: 'ℹ️ No options provided.', ephemeral: true });
         saveData();
         return interaction.reply({ content: `**Setup updated:**\n${results.join('\n')}`, ephemeral: true, allowedMentions: NO_PING });
@@ -1350,6 +1451,15 @@ async function handleCommand(interaction) {
         return interaction.reply({ content: `✅ Delete warnings → **${on ? 'on' : 'off'}** for all channels`, ephemeral: true });
     }
 
+    if (name === 'setnearwarn') {
+        const on = interaction.options.getString('state') === 'on';
+        const channel = interaction.options.getChannel('channel');
+        const apply = cid => on ? nearLimitWarn.set(cid, true) : nearLimitWarn.delete(cid);
+        if (channel) { apply(channel.id); saveData(); return interaction.reply({ content: `✅ Near-limit warnings for <#${channel.id}> → **${on ? 'on' : 'off'}**`, ephemeral: true }); }
+        eachTrackedChannel(guildId, apply); saveData();
+        return interaction.reply({ content: `✅ Near-limit warnings → **${on ? 'on' : 'off'}** for all channels`, ephemeral: true });
+    }
+
     if (name === 'setuserlimit') {
         const target = interaction.options.getUser('user');
         const limit = Math.min(interaction.options.getInteger('limit'), MAX_LIMIT);
@@ -1420,11 +1530,11 @@ async function handleCommand(interaction) {
             .setColor(COLORS.primary)
             .setDescription('Two independent limits guard each channel: a **daily limit** (memes per window) and a **cooldown** (minimum time between memes). Admins bypass everything. Members only see `/info`.')
             .addFields(
-                { name: '👤 For members', value: '**/info [channel]** — see your memes used today, what\'s left, your cooldown, and when it resets. Defaults to the channel you run it in.', inline: false },
-                { name: '⭐ /setup', value: 'One-shot config (applies to all tracked channels): `channel`, `limit`, `cooldown` (e.g. 1h/off), `resettime`, `roles`, `blockuser`, `unblockuser`, `lockdown`.', inline: false },
+                { name: '👤 For members', value: '**/info [channel]** - see your memes used today, what\'s left, your cooldown, and when it resets. Defaults to the channel you run it in.\nWhen delete-DMs are on, each DM has a button to opt out of (or back into) future alerts.', inline: false },
+                { name: '⭐ /setup', value: 'One-shot config (applies to all tracked channels): `channel`, `limit`, `cooldown` (e.g. 1h/off), `resettime`, `roles`, `blockuser`, `unblockuser`, `lockdown`, `warn`, `nearwarn`.', inline: false },
                 { name: '📌 Channels', value: '**/addchannel** `<channel> [limit] [cooldown] [resettime]` · **/removechannel** `<channel>` · **/listchannels** · **/channeldashboard** `<channel>`', inline: false },
-                { name: '⚙️ Limits', value: '**/setlimit** `<n> [channel]` · **/setcooldown** `<time|off> [channel]` · **/setresettime** `<time> [channel]` · **/setuserlimit** `<user> <n> [channel]` (per-member override) · **/setwarn** `<on|off> [channel]` (DM on delete)', inline: false },
-                { name: '👥 Members', value: '**/checkuser** `<user> [channel]` (no ping) · **/reset** `<user> [channel]` · **/blockuser** · **/unblockuser**', inline: false },
+                { name: '⚙️ Limits', value: '**/setlimit** `<n> [channel]` · **/setcooldown** `<time|off> [channel]` · **/setresettime** `<time> [channel]` · **/setuserlimit** `<user> <n> [channel]` (per-member override) · **/setwarn** `<on|off> [channel]` (DM on delete) · **/setnearwarn** `<on|off> [channel]` (in-channel "1 left" notice)', inline: false },
+                { name: '👥 Members', value: '**/checkuser** `<user> [channel]` (no ping) · **/reset** `<user> [channel]` · **/blockuser** · **/unblockuser** · **/testdm** `[user]` (verify the bot can DM them)', inline: false },
                 { name: '🔒 Lockdown & roles', value: '**/lockdown** `<channel> [duration]` · **/unlock** `<channel>` · **/setroles** · **/clearroles**', inline: false },
                 { name: '🎛️ Dashboard', value: '**/dashboard** opens the control center: pick a channel, edit limit/cooldown/window via pop-ups, view **Recent 10** or **Today\'s full list**, and **Manage / Look Up** any member (set a custom limit, maximize, reset, block) without pinging them.', inline: false },
                 { name: '📝 Durations', value: '`30m`, `6h`, `24h`, `3d`, `1d12h`, `2d6h30m`. Cooldown also accepts `off`.', inline: false },
