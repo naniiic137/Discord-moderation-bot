@@ -42,7 +42,7 @@
 - [Architecture](#-architecture)
 - [FAQ](#-faq)
 - [Contributing](#-contributing)
-- [License](#-license)
+- [License](#license)
 
 ---
 
@@ -402,9 +402,9 @@ No. Administrators bypass limits, cooldowns, lockdowns, role restrictions and bl
 
 ---
 
-## 📄 License
+## License
 
-The README has always described the project as MIT-licensed, but no `LICENSE` file has been added to the repository yet.
+© 2026 Hamza Ben Ismail. All rights reserved.
 
 ---
 
