@@ -204,6 +204,9 @@ function loadData() {
 // Schedule (or re-schedule) the auto-unlock for a timed lockdown.
 function scheduleUnlock(channelId, lockData) {
     const remaining = lockData.expiresAt - Date.now();
+    // setTimeout overflows above ~24.8 days (2^31-1 ms) and would fire
+    // immediately; longer lockdowns are expired by the 30s sweep instead.
+    if (remaining > 2 ** 31 - 1) return;
     setTimeout(() => {
         const current = lockedChannels.get(channelId);
         if (current && current.lockedAt === lockData.lockedAt) {

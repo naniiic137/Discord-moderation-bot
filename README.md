@@ -2,17 +2,31 @@
 
 # 🛡️ Meme Guardian Bot
 
-### A powerful Discord moderation bot built to control and manage message flow in specific channels.
+### A Discord.js v14 moderation bot that rate-limits posting in meme channels: daily caps, cooldowns and per-member overrides, all managed from an interactive in-Discord dashboard.
 
 [![Discord.js](https://img.shields.io/badge/discord.js-v14-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.js.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-16%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
-[![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
 <br>
 
 **Daily limits** · **Per-submission cooldowns** · **Multi-channel** · **Per-member overrides** · **Lockdowns** · **Roles** · **Interactive dashboard** · **Persistent**
 
+<br>
+
+<img src="docs/dashboard.svg" alt="Channel Control dashboard: status, limit, cooldown, window, roles, stats, top members and the admin buttons" width="720">
+
+<sub>Mock of the <code>/channeldashboard</code> embed, drawn from the fields and buttons <code>bot.js</code> renders (sample data).</sub>
+
 </div>
+
+## At a glance
+
+- **Two independent guards per channel:** a daily limit (default **5**) and a cooldown between accepted posts (default **1h**) over a configurable window (default **24h**). Messages over the line are deleted and don't count.
+- **23 slash commands**, all admin-only except `/info`, plus a button/menu/modal **dashboard** so admins rarely need to type a command.
+- **Per-channel, per-member control:** custom limits, "maximize", block, reset, or give a slot back with the +1 / -1 arrows, all without pinging anyone.
+- **Lockdowns and role restrictions**, with timed lockdowns that resume after a restart.
+- **Survives restarts:** all state is persisted to `data.json` with atomic writes, coalesced per-message saves (at most one per second) and a flush on shutdown.
+- **Member-friendly:** optional DM when a post is removed (with an opt-out button) and an optional auto-deleting "1 meme left" notice.
 
 ---
 
@@ -60,7 +74,7 @@ Each server can track **multiple channels**, every channel keeps its **own indep
 | **⏲️ Live Countdowns** | Reset and cooldown times render as Discord timestamps that tick down live in every client |
 | **🔎 Member Lookup** | Check any member's status, or pick them from a menu, **without pinging them** |
 | **💾 Persistent Storage** | All settings and live state are saved to `data.json`; timed lockdowns resume after a restart |
-| **👻 Stealth Mode** | Every bot response is ephemeral - only the person who ran the command sees it |
+| **👻 Stealth Mode** | Every command and dashboard response is ephemeral - only the person who ran it sees it |
 
 ### 🔐 Permission Model
 
@@ -129,14 +143,14 @@ Message in a tracked channel (non-admin)
 
 ### Prerequisites
 
-- **Node.js** v16.9.0 or higher ([Download](https://nodejs.org/))
+- **Node.js** v18 or higher (required by discord.js 14) ([Download](https://nodejs.org/))
 - A **Discord account** with a server you have admin access to
 
 ### Step 1: Clone & install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/meme-guardian-bot.git
-cd meme-guardian-bot
+git clone https://github.com/naniiic137/Discord-moderation-bot.git
+cd Discord-moderation-bot
 npm install
 ```
 
@@ -151,7 +165,7 @@ npm install
 
 ### Step 3: Configure environment
 
-Create a `.env` file in the project root:
+Copy `.env.example` to `.env` in the project root and fill in your token:
 
 ```env
 DISCORD_TOKEN=your_bot_token_here
@@ -205,7 +219,7 @@ Commands registered
 | `/setlimit <number> [channel]` | Daily limit (default 5). No channel = all channels |
 | `/setcooldown <time\|off> [channel]` | Time between posts (default 1h). `off` disables it |
 | `/setresettime <duration> [channel]` | Length of the daily window |
-| `/setuserlimit <user> <limit> [channel]` | Per-member override (use a huge number to maximize) |
+| `/setuserlimit <user> <limit> [channel]` | Per-member override (1,000,000 or more = maximized) |
 | `/setwarn <on\|off> [channel]` | DM members when their post is removed |
 | `/setnearwarn <on\|off> [channel]` | In-channel notice when a member has 1 meme left |
 
@@ -288,6 +302,8 @@ All dashboard replies are private to the admin who opened them, and member lists
 
 ## 🏗️ Architecture
 
+<p align="center"><img src="docs/architecture.svg" alt="Architecture: Discord gateway events feed the enforcement pipeline and the interaction router, which read and write in-memory Maps persisted to data.json" width="900"></p>
+
 | Technology | Purpose |
 |------------|---------|
 | **Node.js** | Runtime |
@@ -297,10 +313,12 @@ All dashboard replies are private to the admin who opened them, and member lists
 ### Project Structure
 
 ```
-meme-guardian-bot/
+Discord-moderation-bot/
 ├── bot.js              # All bot logic - commands, dashboard, enforcement
 ├── package.json        # Dependencies and scripts
+├── docs/               # README images (dashboard mock, architecture diagram)
 ├── data.json           # Persisted state (auto-created, not committed)
+├── .env.example        # Template for your .env
 ├── .env                # Bot token (not committed)
 ├── .gitignore
 └── README.md
@@ -379,7 +397,6 @@ No. Administrators bypass limits, cooldowns, lockdowns, role restrictions and bl
 ### Ideas
 
 - [ ] Per-guild timezone configuration
-- [ ] Warning to a member as they approach their limit
 - [ ] Moderation log channel
 - [ ] Web dashboard
 
@@ -387,7 +404,7 @@ No. Administrators bypass limits, cooldowns, lockdowns, role restrictions and bl
 
 ## 📄 License
 
-MIT - see [LICENSE](LICENSE).
+The README has always described the project as MIT-licensed, but no `LICENSE` file has been added to the repository yet.
 
 ---
 

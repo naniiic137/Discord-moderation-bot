@@ -1,11 +1,25 @@
 # Dependencies
 node_modules/
 
-# Environment variables (contains bot token - NEVER commit this)
+# Environment variables (contain the bot token - NEVER commit these)
 .env
+.env.*
+!.env.example
+
+# Persisted bot state (contains server/user IDs)
+data.json
+data.json.tmp
+data/
 
 # Setup instructions (private)
 SETUP.md
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # OS files
 Thumbs.db
@@ -17,10 +31,3 @@ Desktop.ini
 .idea/
 *.swp
 *.swo
-
-# Logs
-*.log
-npm-debug.log*
-
-# Database
-data.json
