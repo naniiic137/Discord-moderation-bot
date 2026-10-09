@@ -400,8 +400,6 @@ No. Administrators bypass limits, cooldowns, lockdowns, role restrictions and bl
 - [ ] Moderation log channel
 - [ ] Web dashboard
 
-**Contributors:** [Jihed Jarboui (@Jyhed)](https://github.com/Jyhed)
-
 ---
 
 ## License
